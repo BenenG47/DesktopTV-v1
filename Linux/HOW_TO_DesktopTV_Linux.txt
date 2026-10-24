@@ -1,0 +1,172 @@
+DesktopTV on Linux - your desktop on Jodi's TV and PC in The Killing Antidote
+==========================================================================
+
+Tested on: CachyOS, KDE Plasma 6 (Wayland), Steam with Proton 11, ReShade 6.8.0 (add-on build).
+For the Windows version and what every feature does, see ../README.txt.
+
+
+What it is
+----------
+The same DesktopTV ReShade add-on as on Windows, plus a small Linux helper. Under Proton
+Wine cannot see a Wayland desktop, move the real mouse onto it or reach the sound of Linux
+programs, so the helper does those parts and the add-on keeps every rule and calculation:
+
+    KDE (desktop portal, PipeWire, KWin)  <->  desktoptv_capture.py + desktoptv_pw
+                                           <--TCP 127.0.0.1:47474-->  add-on in the game
+
+  picture   the shared monitor (or window) on Jodi's TV and PC screen, with the mouse pointer
+  PC mode   Insert puts the real pointer on the shared monitor, the keyboard goes to the window
+            under it, the game stays in front; Insert again brings the pointer back into the game
+  sound     programs on the shared monitor are muted / faded / panned like on Windows, and given
+            back when the helper or the game stops
+
+The add-on notices by itself that it runs under Proton (LinuxSource=2) and then uses the
+helper. The helper sends nothing outside your PC.
+
+
+Folder contents
+---------------
+  desktoptv_capture.py        the helper (keep it running while you play)
+  desktoptv_pw.cpp            the picture part of the helper, started by desktoptv_capture.py
+  build_linux.sh              builds build/DesktopTV.addon64 (MinGW) and build/desktoptv_pw
+  mingw_include/              two small headers that let MinGW compile the ReShade SDK
+  build/                      both, ready built
+  ../Source/                  add-on source and ReShade SDK headers (shared with Windows)
+  ../TheKillingAntidote/      the files for the game folder (marker video, DesktopTVPos script, spots)
+
+
+What you need
+-------------
+- Packages (Arch / CachyOS names):
+    python-gobject python-dbus pipewire pipewire-pulse (for pactl)
+    xdg-desktop-portal-kde                       (normally already installed with Plasma)
+    mingw-w64-gcc                                (only to build the add-on yourself)
+- KDE Plasma 6 (the helper uses KWin scripts and KDE global shortcuts).
+- ReShade 6.8.0 WITH FULL ADD-ON SUPPORT (reshade.me, the second download button,
+  file ReShade_Setup_6.8.0_Addon.exe). The normal build does not work.
+- A monitor to share. A second monitor is best; sharing a single window also works for the
+  picture, but then PC mode and the second-screen sound are off.
+
+
+Installation (once)
+-------------------
+Game folder below: <Steam library>/steamapps/common/TheKillingAntidote/TheKillingAntidote
+"Win64" means: <game folder>/Binaries/Win64
+
+1. Build (or use the files in build/):
+       ./build_linux.sh
+   It prints "BUILD OK" twice.
+
+2. Get ReShade64.dll out of the installer. The installer is a zip archive inside:
+       mkdir reshade && bsdtar -xf ReShade_Setup_6.8.0_Addon.exe -C reshade
+   (7z x works too.) You do not need to run the installer.
+
+3. Copy the files into the game:
+       reshade/ReShade64.dll                    ->  Win64/dxgi.dll          (note the new name)
+       build/DesktopTV.addon64                  ->  Win64/
+       the contents of ../TheKillingAntidote/   ->  <game folder>/          (as on Windows)
+
+4. Create Win64/ReShade.ini with the [DesktopTV] section of "../DesktopTV settings.ini",
+   then change / add these lines:
+       SRGB=0
+       LinuxSource=2
+       LinuxPort=47474
+
+5. Steam: right-click the game -> Properties -> Launch options:
+       WINEDLLOVERRIDES="dxgi=n,b" %command%
+   Without it, Proton ignores ReShade's dxgi.dll.
+
+6. Start the game once. The ReShade banner appears at the top. That's it.
+
+
+Daily use
+---------
+1. Start the helper (before or during the game):
+       ./desktoptv_capture.py
+   The first time, KDE asks twice: what to share (pick a monitor, then "Share") and whether
+   to allow pointer control (needed for PC mode). KDE remembers both; next time it starts
+   without asking.
+
+2. In Jodi's office, switch the TV to the "!Desktop" video. Your desktop appears on the TV
+   and on her PC screen. Insert at her PC = PC mode, as on Windows (../README.txt).
+
+3. Stop the helper with Ctrl+C when you are done; it gives the sound back. The game keeps
+   running, and the add-on reconnects when you start the helper again.
+
+Options of desktoptv_capture.py
+  --choose              forget the remembered monitor/window and pointer permission, ask again
+  --no-control          do not ask for pointer control (no PC mode)
+  --size 1280x720       picture size sent to the game (default: the monitor's own size)
+  --fps 15              updates per second until the add-on sends its FPS= setting (default 30)
+  --port 47474          TCP port; must match LinuxPort in ReShade.ini
+
+
+Settings ([DesktopTV] in Win64/ReShade.ini, read only when the game starts)
+---------------------------------------------------------------------------
+All settings of ../README.txt work the same, plus:
+  LinuxSource=2   0 = Windows Desktop Duplication, 1 = always the Linux helper,
+                  2 = the Linux helper when running under Wine/Proton (default)
+  LinuxPort=47474 port of the helper
+  SRGB=0          TV colours: 0 or 1, whichever looks right
+Ignored on Linux: Monitor= (choose in the KDE dialog instead, or --choose).
+
+Edit ReShade.ini with the game closed: ReShade may write the file back when the game exits.
+
+
+Troubleshooting
+---------------
+Log: Win64/ReShade.log, lines starting with "DesktopTV:". The helper prints its own lines
+starting with "DesktopTV:" in the terminal.
+
+- The TV shows the word "DESKTOP":
+  the marker video plays, but the add-on is not active. Check the launch option (step 5)
+  and that ReShade.log contains 'Registered add-on "DesktopTV"'.
+
+- The TV stays on the last picture / ReShade.log says "Linux helper not reachable":
+  desktoptv_capture.py is not running, or it uses another port than LinuxPort.
+
+- The helper prints "... was cancelled or failed" and quits:
+  a KDE dialog was closed without sharing. Start it again and click "Share".
+
+- PC mode does nothing / "pointer control was not allowed": start with --choose and allow
+  pointer control. "a monitor must be shared": a window is shared, choose a monitor.
+
+- "the ... key is taken by another KDE shortcut": that key only works while the game has
+  focus. Free it in KDE's shortcut settings, or pick another PCModeKey / HideUIKey.
+
+- "fatal error" right after starting the game:
+  test without the add-on (move DesktopTV.addon64 out of Win64). If the game then starts,
+  the add-on build is broken - see "Building" below. If it still crashes, it is ReShade or
+  Proton: remove dxgi.dll and the launch option.
+
+- Colours look washed out or too dark: switch SRGB between 0 and 1.
+
+- The game stutters while the TV shows the desktop: start the helper with
+  --size 1280x720 and set FPS=15.
+
+
+Building
+--------
+./build_linux.sh compiles ../Source/src/desktoptv_addon.cpp - the same source as the Windows
+build.bat - with MinGW-w64 into build/DesktopTV.addon64 (no extra DLLs needed), and
+desktoptv_pw.cpp against PipeWire into build/desktoptv_pw.
+
+Important for anyone changing the source: ReShade itself is built with MSVC, and MinGW
+passes the arguments of C++ methods that return a struct differently. Calling such a
+ReShade method from the add-on (for example device::get_resource_desc) crashes the game
+in a MinGW build. Methods returning pointers, numbers, enums or nothing are fine. That is
+why the add-on asks D3D11 directly (native_desc, native_back_buffer, ...).
+
+
+Uninstall
+---------
+Delete Win64/dxgi.dll, Win64/DesktopTV.addon64, Win64/ReShade.ini, Win64/ReShade.log, the
+files copied from ../TheKillingAntidote/ and remove the Steam launch option.
+To make KDE forget the shared monitor and the pointer permission: delete ~/.config/desktoptv/.
+
+
+Limitations on Linux
+--------------------
+- The TV does not play the desktop's sound through the game; you hear it from your PC, with
+  the volume and left/right the add-on sets.
+- KDE Plasma 6 only (KWin scripts, KDE global shortcuts).

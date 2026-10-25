@@ -1,0 +1,17 @@
+# Keep Linux-friendly line endings in the repository and in checkouts
+*.sh   text eol=lf
+*.py   text eol=lf
+*.cpp  text eol=lf
+*.hpp  text eol=lf
+*.h    text eol=lf
+*.inl  text eol=lf
+*.lua  text eol=lf
+*.txt  text eol=lf
+*.ini  text eol=lf
+*.md   text eol=lf
+*.bat  text eol=crlf
+*.addon64 binary
+*.mp4  binary
+*.gif  binary
+*.png  binary
+Linux/build/desktoptv_pw binary

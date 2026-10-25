@@ -11,7 +11,7 @@ YouTube on her TV. Your browser on her PC. Sound that follows her around the off
 ## Features
 
 - **Jodi's TV** shows one of your monitors live. Just play the `!Desktop` video on the TV.
-- **Jodi's PC screen** shows the same monitor in place of her wallpaper.
+- **Jodi's PC screen** shows the same monitor in place of her wallpaper. It works with the game's own wallpaper and with wallpaper mods like PCWallpaperQuiet.
 - **PC mode (Insert)**: lean in at her PC, press Insert, and your mouse and keyboard work on your real desktop while you watch it in game.
   - A cursor is drawn on her screen and her own PC interface hides itself.
   - The game stays in front.
@@ -40,8 +40,7 @@ YouTube on her TV. Your browser on her PC. Sound that follows her around the off
 1. **ReShade 6.8.0 with full add-on support** from [reshade.me](https://reshade.me) (the *second* download button). Install it on `TheKillingAntidote\Binaries\Win64\TheKillingAntidote-Win64-Shipping.exe` and pick DirectX 10/11/12.
    > ⚠️ The normal ReShade build will **not** work.
 2. **UE4SS 3.0.1** ([RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)). Only needed for the sound that follows Jodi. Without it everything else works, and the sound simply plays while the desktop is on the TV or PC mode is on.
-3. **[PCWallpaperQuiet](https://www.nexusmods.com/thekillingantidote/mods/815?tab=files&file_id=3574)**. **Needed for the desktop to appear on Jodi's PC.** Without it the TV still works, but her PC keeps its normal wallpaper. (Support for the original wallpaper is planned.)
-4. **A second screen** to show in game. With a single monitor, the TV just shows the game itself. A free virtual monitor works perfectly:
+3. **A second screen** to show in game. With a single monitor, the TV just shows the game itself. A free virtual monitor works perfectly:
    - Download the control app: [VDD.Control.25.7.23.zip](https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VDD.Control.25.7.23.zip) (not a "Driver Only" file, not "Source code").
    - Extract it, run `VDD Control.exe`, click **Install Driver** and accept the Windows prompts.
    - In Windows Display settings, choose **Extend these displays**, keep your real monitor as the main display and set the virtual screen to 1920x1080.
@@ -77,7 +76,7 @@ Start the game once and close it. The add-on adds a `[DesktopTV]` section to `Bi
 | `Width` / `Height` | size of the marker video (1264 x 720, keep as is) |
 | `PCScreen=1` | show the desktop on Jodi's PC screen |
 | `PCSRGB=1` | colours on her PC screen (2 = automatic also works) |
-| `PCWidth` / `PCHeight` | size of her wallpaper picture (1920 x 1080, keep as is) |
+| `PCWidth` / `PCHeight` | size of a wallpaper-mod picture such as PCWallpaperQuiet (1920 x 1080, keep as is). The game's own wallpaper is recognised automatically |
 | `PCModeKey=45` | PC mode key (Windows key codes: 45 = Insert, 35 = End) |
 | `HideUIKey=0` | extra key to hide Jodi's PC interface (145 = Scroll Lock, 0 = none) |
 | `HideUI=0` | 1 = her interface hidden from the start |

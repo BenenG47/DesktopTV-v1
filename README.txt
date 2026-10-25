@@ -4,7 +4,8 @@ DesktopTV - your PC's desktop on Jodi's TV and PC, in The Killing Antidote
 What it does
 ------------
 - Jodi's TV shows a monitor of your PC, live (play the "!Desktop" video on the TV).
-- Jodi's PC screen shows the same monitor (it replaces her wallpaper).
+- Jodi's PC screen shows the same monitor (it replaces her wallpaper: the game's own, or a
+  wallpaper mod such as PCWallpaperQuiet).
 - PC mode (Insert): your mouse and keyboard work on that monitor while you watch it in game.
   A cursor is drawn on Jodi's screen, her own PC interface is hidden, the game stays in front,
   and the cursor starts where the game's cursor was (and goes back to the same spot).
@@ -59,7 +60,8 @@ start, and ReShade may rewrite the file on exit).
   Width / Height     size of the marker video (1264 x 720 - keep)
   PCScreen=1         show the desktop on Jodi's PC screen
   PCSRGB=1           colours on her PC screen (2 = automatic also works)
-  PCWidth / PCHeight size of her wallpaper picture (1920 x 1080 - keep)
+  PCWidth / PCHeight size of a wallpaper-mod picture like PCWallpaperQuiet (1920 x 1080 - keep);
+                     the game's own wallpaper is recognised automatically
   PCModeKey=45       PC mode key (Windows key codes: 45 = Insert, 35 = End)
   HideUIKey=0        extra key to hide Jodi's PC interface (145 = Scroll Lock, 0 = none)
   HideUI=0           1 = her interface hidden from the start
@@ -110,7 +112,7 @@ the game closes; after a crash, the next start gives it back.
 
 Logs (if something does not work)
 ---------------------------------
-  Binaries\Win64\ReShade.log   lines starting with "DesktopTV:" (should say "v4.8 loaded")
+  Binaries\Win64\ReShade.log   lines starting with "DesktopTV:" (should say "v4.9 loaded")
   Binaries\Win64\UE4SS.log     lines starting with "[DesktopTVPos]" ("v5 loaded", then
                                "following Jodi via ..." once in her office)
 

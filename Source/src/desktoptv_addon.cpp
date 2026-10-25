@@ -1,10 +1,11 @@
-// DesktopTV v4.8 - ReShade add-on (D3D11) for The Killing Antidote. Benja's private mod.
+// DesktopTV v4.9 - ReShade add-on (D3D11) for The Killing Antidote. Benja's private mod.
 //
 // What it does:
 //   1. Copies a monitor of this PC (DXGI Desktop Duplication) into a texture, up to FPS times a second.
 //   2. Every time the game binds one of these textures for drawing, it binds the desktop instead:
 //        - TV:  the "!Desktop" marker video (Width x Height, default 1264x720) playing on Jodi's TV
-//        - PC:  Jodi's PC wallpaper (/Game/Project/UserInterface/Assets/wallpaper, 1920x1080 DXT1)
+//        - PC:  Jodi's PC wallpaper: 1920x1080 DXT1 (PCWallpaperQuiet), or the game's own wallpapers,
+//               recognised by their content (wallpaper: 512x512 BGRA, wallpaper_e: DXT1 on the monitor)
 //   3. PC mode (PCModeKey, default Insert): the real mouse cursor jumps onto the captured monitor and
 //      stays there, so mouse and keyboard work on that monitor while you watch it in game. The cursor
 //      is drawn into the picture. The game is kept in front (it is not told that it lost focus).
@@ -99,7 +100,7 @@ static std::atomic<device *> g_device { nullptr };
 static HWND g_game_hwnd = nullptr;
 
 // Shader resource views of the textures we replace; kind 0 = TV, 1 = PC
-struct target { uint64_t view; int kind; bool srgb; };
+struct target { uint64_t view; int kind; bool srgb; bool ui; }; // ui = her interface (draws after it may be hidden)
 static std::mutex g_targets_mutex;
 static std::vector<target> g_targets;
 static std::atomic<int> g_target_count { 0 };
@@ -204,6 +205,8 @@ static resource_desc native_desc(resource res)
 		d.texture.width = td.Width;
 		d.texture.height = td.Height;
 		d.texture.format = static_cast<format>(td.Format); // ReShade formats use the DXGI numbers
+		d.texture.levels = (uint16_t)td.MipLevels;
+		d.texture.depth_or_layers = (uint16_t)td.ArraySize;
 		if (td.BindFlags & D3D11_BIND_RENDER_TARGET) d.usage = resource_usage::render_target;
 	}
 	return d;
@@ -1616,30 +1619,199 @@ static int target_kind(const resource_desc &d)
 	return -1;
 }
 
+static void register_target(uint64_t view, int kind, bool ui, format vf, const resource_desc &d) // g_targets_mutex held
+{
+	const int setting = kind == 0 ? g_srgb : g_pcsrgb;
+	const bool game_srgb = vf == format::b8g8r8a8_unorm_srgb || vf == format::r8g8b8a8_unorm_srgb || vf == format::b8g8r8x8_unorm_srgb ||
+		vf == format::bc1_unorm_srgb || vf == format::bc2_unorm_srgb || vf == format::bc3_unorm_srgb || vf == format::bc7_unorm_srgb;
+	const bool srgb = setting == 2 ? game_srgb : setting != 0;
+	g_targets.push_back({ view, kind, srgb, ui });
+	LOG_INFO("%s: the game reads it as format %u (%s) -> desktop given as %s", kind == 0 ? "TV" : "PC screen", (unsigned)vf,
+		game_srgb ? "sRGB" : "plain", srgb ? "sRGB" : "plain");
+	g_target_count = (int)g_targets.size();
+	LOG_INFO("%s texture found (%ux%u, format %u, view %llx) - %d active", kind == 0 ? "TV" : "PC screen",
+		d.texture.width, d.texture.height, (unsigned)d.texture.format, (unsigned long long)view, g_target_count.load());
+}
+
+// The game's own wallpapers (no wallpaper mod) have very common sizes and formats, so they are recognised by
+// their content: a fingerprint of the picture data the game uploads, compared with the original files.
+static const uint64_t FP_WALLPAPER = 0x613085354e19b8abull;   // wallpaper: 512x512 B8G8R8A8, the whole picture (her interface)
+static const uint64_t FP_WALLPAPER_E = 0xad909d431bccef90ull;             // wallpaper_e: DXT1, its 64x64 level (the monitor in the room)
+struct cand_view { uint64_t view; format vf; };
+static std::mutex g_fp_mutex; // everything below
+static std::map<uint64_t, int> g_fp_res;                          // recognised texture -> 1 = her interface, 2 = the monitor
+static std::map<uint64_t, std::vector<cand_view>> g_cand_views;   // possible wallpaper texture -> its views
+static std::map<uint64_t, uint64_t> g_view_res;                   // view of a possible wallpaper -> its texture
+static std::atomic<int> g_fp_count { 0 };
+static std::atomic<size_t> g_cand_count { 0 }; // number of views in g_view_res
+
+static bool cand_ui(const resource_desc &d)
+{
+	return d.type == resource_type::texture_2d && d.texture.width == 512 && d.texture.height == 512 &&
+		format_to_typeless(d.texture.format) == format::b8g8r8a8_typeless;
+}
+static bool cand_e(const resource_desc &d)
+{
+	const uint32_t w = d.texture.width;
+	return d.type == resource_type::texture_2d && w == d.texture.height && w >= 64 && w <= 4096 && (w & (w - 1)) == 0 &&
+		format_to_typeless(d.texture.format) == format::bc1_typeless;
+}
+static uint64_t fnv_rows(const uint8_t *p, uint32_t rows, uint32_t row_bytes, uint32_t pitch)
+{
+	uint64_t h = 0xcbf29ce484222325ull;
+	for (uint32_t r = 0; r < rows; ++r, p += pitch)
+		for (uint32_t i = 0; i < row_bytes; ++i) { h ^= p[i]; h *= 0x100000001b3ull; }
+	return h;
+}
+// 1 / 2 when this level of the texture is one of the original wallpapers, 0 otherwise
+static int fingerprint(const resource_desc &d, uint32_t mip, const subresource_data &s)
+{
+	if (s.data == nullptr)
+		return 0;
+	if (mip == 0 && cand_ui(d))
+	{
+		const uint32_t pitch = s.row_pitch ? s.row_pitch : 2048;
+		return pitch >= 2048 && fnv_rows(static_cast<const uint8_t *>(s.data), 512, 2048, pitch) == FP_WALLPAPER ? 1 : 0;
+	}
+	if (FP_WALLPAPER_E != 0 && cand_e(d) && (d.texture.width >> mip) == 64)
+	{
+		const uint32_t pitch = s.row_pitch ? s.row_pitch : 128; // DXT1: 16 rows of 4x4 blocks, 128 bytes each
+		return pitch >= 128 && fnv_rows(static_cast<const uint8_t *>(s.data), 16, 128, pitch) == FP_WALLPAPER_E ? 2 : 0;
+	}
+	return 0;
+}
+static void mark_wallpaper(uint64_t res, int which, const char *how)
+{
+	std::lock_guard<std::mutex> lock(g_fp_mutex);
+	if (g_fp_res[res] == which)
+		return;
+	g_fp_res[res] = which;
+	g_fp_count = (int)g_fp_res.size();
+	static int logs = 0;
+	if (logs < 20) { ++logs; LOG_INFO("game's own %s recognised (%s)", which == 1 ? "wallpaper (her interface)" : "wallpaper_e (monitor in the room)", how); }
+	auto it = g_cand_views.find(res);
+	if (it == g_cand_views.end())
+		return;
+	const resource_desc d = native_desc(resource { res });
+	std::lock_guard<std::mutex> lock2(g_targets_mutex);
+	for (const cand_view &c : it->second)
+		if (std::none_of(g_targets.begin(), g_targets.end(), [&](const target &t) { return t.view == c.view; }))
+			register_target(c.view, 1, which == 1, c.vf, d);
+}
+
+static void on_init_resource(device *dev, const resource_desc &desc, const subresource_data *initial_data, resource_usage, resource res)
+{
+	if (initial_data == nullptr || res == 0 || dev != g_device.load() || !g_pcscreen || !(cand_ui(desc) || cand_e(desc)))
+		return;
+	const uint32_t levels = desc.texture.levels ? desc.texture.levels : 1;
+	for (uint32_t mip = 0; mip < levels; ++mip)
+		if (const int which = fingerprint(desc, mip, initial_data[mip]))
+		{
+			mark_wallpaper(res.handle, which, "created");
+			return;
+		}
+}
+static void on_destroy_resource(device *, resource res)
+{
+	if (g_fp_count.load() == 0 && g_cand_count.load() == 0)
+		return;
+	std::lock_guard<std::mutex> lock(g_fp_mutex);
+	g_fp_res.erase(res.handle);
+	g_fp_count = (int)g_fp_res.size();
+	auto it = g_cand_views.find(res.handle);
+	if (it != g_cand_views.end())
+	{
+		for (const cand_view &c : it->second)
+			g_view_res.erase(c.view);
+		g_cand_views.erase(it);
+		g_cand_count = g_view_res.size();
+	}
+}
+static bool on_update_texture_region(device *dev, const subresource_data &data, resource dest, uint32_t sub, const subresource_box *box)
+{
+	if (dev != g_device.load() || !g_pcscreen || dest == 0)
+		return false;
+	const resource_desc d = native_desc(dest);
+	if (!(cand_ui(d) || cand_e(d)))
+		return false;
+	const uint32_t levels = d.texture.levels ? d.texture.levels : 1;
+	const uint32_t mip = sub % levels;
+	if (box != nullptr && (box->left != 0 || box->top != 0 || box->right != (d.texture.width >> mip) || box->bottom != (d.texture.height >> mip)))
+		return false;
+	if (const int which = fingerprint(d, mip, data))
+		mark_wallpaper(dest.handle, which, "uploaded");
+	return false;
+}
+// Texture streaming moves a texture into a new, bigger one by copying: the copy is the same wallpaper
+static void follow_copy(resource src, resource dst)
+{
+	if (g_fp_count.load() == 0 || src == 0 || dst == 0)
+		return;
+	int which = 0;
+	{
+		std::lock_guard<std::mutex> lock(g_fp_mutex);
+		auto it = g_fp_res.find(src.handle);
+		if (it == g_fp_res.end()) return;
+		which = it->second;
+	}
+	mark_wallpaper(dst.handle, which, "copied");
+}
+static bool on_copy_resource(command_list *, resource src, resource dst) { follow_copy(src, dst); return false; }
+static bool on_copy_texture_region(command_list *, resource src, uint32_t, const subresource_box *, resource dst, uint32_t, const subresource_box *, filter_mode)
+{
+	follow_copy(src, dst);
+	return false;
+}
+
 static void on_init_resource_view(device *dev, resource res, resource_usage usage, const resource_view_desc &vdesc, resource_view view)
 {
 	if (usage != resource_usage::shader_resource || res == 0 || dev != g_device.load())
 		return;
 	const resource_desc d = native_desc(res);
+	const format vf = vdesc.format == format::unknown ? d.texture.format : vdesc.format;
 	const int kind = target_kind(d);
 	if (kind < 0)
+	{
+		if (!g_pcscreen || !(cand_ui(d) || cand_e(d)))
+			return;
+		std::lock_guard<std::mutex> lock(g_fp_mutex);
+		auto it = g_fp_res.find(res.handle);
+		if (it != g_fp_res.end())
+		{
+			std::lock_guard<std::mutex> lock2(g_targets_mutex);
+			register_target(view.handle, 1, it->second == 1, vf, d);
+		}
+		else
+		{
+			g_cand_views[res.handle].push_back({ view.handle, vf });
+			g_view_res[view.handle] = res.handle;
+			g_cand_count = g_view_res.size();
+		}
 		return;
+	}
 	std::lock_guard<std::mutex> lock(g_targets_mutex);
-	const int setting = kind == 0 ? g_srgb : g_pcsrgb;
-	const format vf = vdesc.format == format::unknown ? d.texture.format : vdesc.format;
-	const bool game_srgb = vf == format::b8g8r8a8_unorm_srgb || vf == format::r8g8b8a8_unorm_srgb || vf == format::b8g8r8x8_unorm_srgb ||
-		vf == format::bc1_unorm_srgb || vf == format::bc2_unorm_srgb || vf == format::bc3_unorm_srgb || vf == format::bc7_unorm_srgb;
-	const bool srgb = setting == 2 ? game_srgb : setting != 0;
-	g_targets.push_back({ view.handle, kind, srgb });
-	LOG_INFO("%s: the game reads it as format %u (%s) -> desktop given as %s", kind == 0 ? "TV" : "PC screen", (unsigned)vf,
-		game_srgb ? "sRGB" : "plain", srgb ? "sRGB" : "plain");
-	g_target_count = (int)g_targets.size();
-	LOG_INFO("%s texture found (%ux%u, format %u, view %llx) - %d active", kind == 0 ? "TV" : "PC screen",
-		d.texture.width, d.texture.height, (unsigned)d.texture.format, (unsigned long long)view.handle, g_target_count.load());
+	register_target(view.handle, kind, true, vf, d);
 }
 
 static void on_destroy_resource_view(device *, resource_view view)
 {
+	if (g_cand_count.load() != 0)
+	{
+		std::lock_guard<std::mutex> lock(g_fp_mutex);
+		auto vr = g_view_res.find(view.handle);
+		if (vr != g_view_res.end())
+		{
+			auto cv = g_cand_views.find(vr->second);
+			if (cv != g_cand_views.end())
+			{
+				auto &v = cv->second;
+				v.erase(std::remove_if(v.begin(), v.end(), [&](const cand_view &c) { return c.view == view.handle; }), v.end());
+				if (v.empty()) g_cand_views.erase(cv);
+			}
+			g_view_res.erase(vr);
+			g_cand_count = g_view_res.size();
+		}
+	}
 	if (g_target_count.load() == 0)
 		return;
 	std::lock_guard<std::mutex> lock(g_targets_mutex);
@@ -1660,6 +1832,7 @@ static void on_push_descriptors(command_list *cmd_list, shader_stage stages, pip
 	const auto *views = static_cast<const resource_view *>(update.descriptors);
 	resource_view replaced[128];
 	int any = -1;
+	bool any_ui = false;
 	{
 		std::lock_guard<std::mutex> lock(g_targets_mutex);
 		for (uint32_t i = 0; i < update.count; ++i)
@@ -1673,6 +1846,7 @@ static void on_push_descriptors(command_list *cmd_list, shader_stage stages, pip
 				{
 					replaced[i] = resource_view { reinterpret_cast<uint64_t>(g_srv[t.kind][t.srgb ? 1 : 0].load()) };
 					any = t.kind;
+					if (t.kind == 1 && t.ui) any_ui = true;
 					break;
 				}
 			}
@@ -1684,7 +1858,7 @@ static void on_push_descriptors(command_list *cmd_list, shader_stage stages, pip
 	u.descriptors = replaced;
 	cmd_list->push_descriptors(stages, layout, param, u);
 	if (!g_logged_swap[any]) { g_logged_swap[any] = true; LOG_INFO("desktop is now drawn on the %s", any == 0 ? "TV" : "PC screen"); }
-	if (any == 1 && g_cur_rt != 0 && g_back_buffers.count(g_cur_rt) == 0)
+	if (any_ui && g_cur_rt != 0 && g_back_buffers.count(g_cur_rt) == 0)
 	{
 		// The room is drawn into several render targets at once (the 3D monitor on her desk is part of it):
 		// skipping draws there blacks out parts of the room. Her interface on its own is drawn into one.
@@ -1775,6 +1949,10 @@ static void on_destroy_device(device *dev)
 	if (g_linux) linux_stop();
 	release_capture();
 	g_device = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(g_fp_mutex);
+		g_fp_res.clear(); g_cand_views.clear(); g_view_res.clear(); g_fp_count = 0; g_cand_count = 0;
+	}
 	std::lock_guard<std::mutex> lock(g_targets_mutex);
 	g_targets.clear();
 	g_target_count = 0;
@@ -1796,6 +1974,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 		read_settings();
 		reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
 		reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
+		reshade::register_event<reshade::addon_event::init_resource>(on_init_resource);
+		reshade::register_event<reshade::addon_event::destroy_resource>(on_destroy_resource);
+		reshade::register_event<reshade::addon_event::update_texture_region>(on_update_texture_region);
+		reshade::register_event<reshade::addon_event::copy_resource>(on_copy_resource);
+		reshade::register_event<reshade::addon_event::copy_texture_region>(on_copy_texture_region);
 		reshade::register_event<reshade::addon_event::init_resource_view>(on_init_resource_view);
 		reshade::register_event<reshade::addon_event::destroy_resource_view>(on_destroy_resource_view);
 		reshade::register_event<reshade::addon_event::push_descriptors>(on_push_descriptors);
@@ -1805,7 +1988,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 		reshade::register_event<reshade::addon_event::draw>(on_draw);
 		reshade::register_event<reshade::addon_event::draw_indexed>(on_draw_indexed);
 		reshade::register_event<reshade::addon_event::draw_or_dispatch_indirect>(on_draw_indirect);
-		LOG_INFO("v4.8 loaded");
+		LOG_INFO("v4.9 loaded");
 		break;
 	case DLL_PROCESS_DETACH:
 		if (g_pcmode) ClipCursor(nullptr);

@@ -40,7 +40,8 @@ YouTube on her TV. Your browser on her PC. Sound that follows her around the off
 1. **ReShade 6.8.0 with full add-on support** from [reshade.me](https://reshade.me) (the *second* download button). Install it on `TheKillingAntidote\Binaries\Win64\TheKillingAntidote-Win64-Shipping.exe` and pick DirectX 10/11/12.
    > ⚠️ The normal ReShade build will **not** work.
 2. **UE4SS 3.0.1** ([RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)). Only needed for the sound that follows Jodi. Without it everything else works, and the sound simply plays while the desktop is on the TV or PC mode is on.
-3. **A second screen** to show in game. With a single monitor, the TV just shows the game itself. A free virtual monitor works perfectly:
+3. **[PCWallpaperQuiet](https://www.nexusmods.com/thekillingantidote/mods/815?tab=files&file_id=3574)**. **Needed for the desktop to appear on Jodi's PC.** Without it the TV still works, but her PC keeps its normal wallpaper. (Support for the original wallpaper is planned.)
+4. **A second screen** to show in game. With a single monitor, the TV just shows the game itself. A free virtual monitor works perfectly:
    - Download the control app: [VDD.Control.25.7.23.zip](https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VDD.Control.25.7.23.zip) (not a "Driver Only" file, not "Source code").
    - Extract it, run `VDD Control.exe`, click **Install Driver** and accept the Windows prompts.
    - In Windows Display settings, choose **Extend these displays**, keep your real monitor as the main display and set the virtual screen to 1920x1080.

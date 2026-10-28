@@ -112,7 +112,7 @@ the game closes; after a crash, the next start gives it back.
 
 Logs (if something does not work)
 ---------------------------------
-  Binaries\Win64\ReShade.log   lines starting with "DesktopTV:" (should say "v4.9 loaded")
+  Binaries\Win64\ReShade.log   lines starting with "DesktopTV:" (should say "v5.0 loaded")
   Binaries\Win64\UE4SS.log     lines starting with "[DesktopTVPos]" ("v5 loaded", then
                                "following Jodi via ..." once in her office)
 
@@ -127,3 +127,15 @@ Building the add-on yourself (optional - a ready DesktopTV.addon64 is included)
 headers (reshade_include, from github.com/crosire/reshade, BSD-3/MIT) and build.bat.
 Needs Visual Studio 2022 or newer with the C++ tools ("Desktop development with C++",
 the free Build Tools are enough). Double-click build.bat -> build\DesktopTV.addon64.
+
+Version history
+---------------
+1.2 (add-on v5.0, 2026-10-28)
+  - Your browser no longer gets stuck in one ear: DesktopTV always starts from, and gives
+    back, an even left/right, and repairs any program it ever panned when the game starts
+    and closes.
+  - The game keeps its sound in PC mode (Alt+Tab still mutes it as before).
+1.1 (add-on v4.9, 2026-10-25)
+  - Works with the game's own wallpaper on Jodi's PC (PCWallpaperQuiet no longer needed).
+1.0 (add-on v4.8, 2026-10-24)
+  - First release.

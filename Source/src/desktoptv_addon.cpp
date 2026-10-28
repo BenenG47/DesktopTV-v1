@@ -1,4 +1,4 @@
-// DesktopTV v4.9 - ReShade add-on (D3D11) for The Killing Antidote. Benja's private mod.
+// DesktopTV v5.0 - ReShade add-on (D3D11) for The Killing Antidote. Benja's private mod.
 //
 // What it does:
 //   1. Copies a monitor of this PC (DXGI Desktop Duplication) into a texture, up to FPS times a second.
@@ -9,6 +9,11 @@
 //   3. PC mode (PCModeKey, default Insert): the real mouse cursor jumps onto the captured monitor and
 //      stays there, so mouse and keyboard work on that monitor while you watch it in game. The cursor
 //      is drawn into the picture. The game is kept in front (it is not told that it lost focus).
+//      v5.0: its sound keeps playing too - Unreal mutes itself when GetForegroundWindow is another
+//      program, so while PC mode is on the game exe's own GetForegroundWindow returns the game window.
+//      v5.0: a program's left/right balance is always restored to 100 % / 100 % (v4.9 saved its current
+//      balance as "the original"; a browser restarting its sound process mid-pan inherited the panned
+//      balance from Windows, and it compounded - e.g. Chrome stuck at 15 % left / 1 % right after the game).
 //      Press the key again to get the mouse back in the game. If the game leaves the screen anyway
 //      (minimised, Alt+Tab), the cursor is released and put back on the main screen.
 //   4. HideUIKey (default Delete): hides Jodi's own icons/windows drawn on top of the wallpaper.
@@ -816,6 +821,72 @@ static void restore_before_close()
 	if (g_restored_event) WaitForSingleObject(g_restored_event, 1500);
 }
 
+// ---------------------------------------------------------------- game sound in PC mode (v5.0)
+
+// Unreal mutes the whole game when another program is in front (UnfocusedVolumeMultiplier, checked every
+// frame through GetForegroundWindow, not through the focus messages hooked above). In PC mode the program
+// on the shared monitor is in front, so the rain, thunder and every other game sound went silent.
+// Fix: the game exe's import of GetForegroundWindow is redirected here; while PC mode is on it answers
+// "the game". Only the exe's own calls are changed (not ReShade, not this add-on, not other programs);
+// outside PC mode it is the real function, so Alt+Tab still mutes the game as before.
+typedef HWND (WINAPI *get_fg_fn)();
+static get_fg_fn g_real_get_fg = nullptr;
+static void **g_get_fg_slots[8] = {};
+static int g_get_fg_count = 0;
+
+static HWND WINAPI game_get_foreground_window()
+{
+	if (g_pcmode && g_keepfront && g_game_hwnd != nullptr)
+		return g_game_hwnd;
+	return g_real_get_fg ? g_real_get_fg() : nullptr;
+}
+
+static bool write_slot(void **slot, void *value)
+{
+	DWORD old = 0;
+	if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) return false;
+	*slot = value;
+	VirtualProtect(slot, sizeof(void *), old, &old);
+	return true;
+}
+
+static void hook_game_foreground()
+{
+	static bool tried = false;
+	if (tried) return;
+	tried = true;
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	g_real_get_fg = user32 ? reinterpret_cast<get_fg_fn>(GetProcAddress(user32, "GetForegroundWindow")) : nullptr;
+	BYTE *base = reinterpret_cast<BYTE *>(GetModuleHandleW(nullptr)); // the game exe
+	if (g_real_get_fg == nullptr || base == nullptr) { LOG_WARN("game sound in PC mode: GetForegroundWindow not found"); return; }
+	auto *dos = reinterpret_cast<IMAGE_DOS_HEADER *>(base);
+	auto *nt = reinterpret_cast<IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+	const IMAGE_DATA_DIRECTORY &dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	if (dir.VirtualAddress == 0) { LOG_WARN("game sound in PC mode: the game has no import table"); return; }
+	// Match by address, so it works whatever DLL name or ordinal the import uses
+	for (auto *imp = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR *>(base + dir.VirtualAddress); imp->Name != 0; ++imp)
+		for (auto *th = reinterpret_cast<IMAGE_THUNK_DATA *>(base + imp->FirstThunk); th->u1.Function != 0; ++th)
+		{
+			void **slot = reinterpret_cast<void **>(&th->u1.Function);
+			if (*slot == reinterpret_cast<void *>(g_real_get_fg) && g_get_fg_count < 8 &&
+				write_slot(slot, reinterpret_cast<void *>(&game_get_foreground_window)))
+				g_get_fg_slots[g_get_fg_count++] = slot;
+		}
+	if (g_get_fg_count > 0)
+		LOG_INFO("game sound in PC mode: hooked (%d import%s) - the game keeps its sound while PC mode is on", g_get_fg_count, g_get_fg_count > 1 ? "s" : "");
+	else
+		LOG_WARN("game sound in PC mode: the game does not import GetForegroundWindow - its sound may stop in PC mode");
+}
+
+// Before this add-on is unloaded: the game must not call into freed code
+static void unhook_game_foreground()
+{
+	for (int i = 0; i < g_get_fg_count; ++i)
+		if (*g_get_fg_slots[i] == reinterpret_cast<void *>(&game_get_foreground_window))
+			write_slot(g_get_fg_slots[i], reinterpret_cast<void *>(g_real_get_fg));
+	g_get_fg_count = 0;
+}
+
 static void hook_game_window()
 {
 	if (g_orig_wndproc != nullptr || g_game_hwnd == nullptr)
@@ -910,6 +981,7 @@ static void enter_pcmode()
 {
 	if (!g_capturing) { LOG_WARN("PC mode: no desktop capture yet (show the desktop on the TV or the PC first)"); return; }
 	hook_game_window();
+	hook_game_foreground();
 	GetCursorPos(&g_saved_cursor);
 	POINT c = { (g_mon_rect.left + g_mon_rect.right) / 2, (g_mon_rect.top + g_mon_rect.bottom) / 2 };
 	float u, v;
@@ -1151,6 +1223,7 @@ struct session_state
 {
 	bool muted_by_us = false;
 	bool volume_saved = false;
+	bool master_changed = false; // only programs without stereo channels get their master volume faded
 	float master = 1;
 	std::vector<float> channels;
 	float cur_l = -1, cur_r = -1;
@@ -1175,7 +1248,9 @@ static void set_session_mute(IAudioSessionControl2 *ctl, BOOL mute)
 	}
 }
 
-// Set left/right volume (relative to the program's own volume, saved the first time)
+// Set left/right volume. The balance we start from is ALWAYS even (100 % / 100 %), never the program's current
+// one: Windows hands a panned balance on to a program's next sound process, and saving that as "the original"
+// made it compound (v4.9 bug). Windows has no setting for a per-program balance, so even is always right.
 static void set_session_gains(IAudioSessionControl2 *ctl, session_state &st, float l, float r)
 {
 	IChannelAudioVolume *ch = nullptr;
@@ -1188,7 +1263,6 @@ static void set_session_gains(IAudioSessionControl2 *ctl, session_state &st, flo
 	{
 		if (sv) sv->GetMasterVolume(&st.master);
 		st.channels.assign(n, 1.0f);
-		for (UINT i = 0; i < n; ++i) ch->GetChannelVolume(i, &st.channels[i]);
 		st.volume_saved = true;
 	}
 	if (ch && n == 2 && st.channels.size() == 2)
@@ -1199,6 +1273,7 @@ static void set_session_gains(IAudioSessionControl2 *ctl, session_state &st, flo
 	else if (sv)
 	{
 		sv->SetMasterVolume(st.master * std::max(l, r), nullptr); // not stereo: fade only
+		st.master_changed = true;
 	}
 	if (ch) ch->Release();
 	if (sv) sv->Release();
@@ -1213,15 +1288,16 @@ static void restore_session_volume(IAudioSessionControl2 *ctl, session_state &st
 	{
 		UINT n = 0;
 		ch->GetChannelCount(&n);
-		for (UINT i = 0; i < n && i < st.channels.size(); ++i) ch->SetChannelVolume(i, st.channels[i], nullptr);
+		for (UINT i = 0; i < n; ++i) ch->SetChannelVolume(i, 1.0f, nullptr); // always back to an even balance
 		ch->Release();
 	}
-	if (SUCCEEDED(ctl->QueryInterface(__uuidof(ISimpleAudioVolume), reinterpret_cast<void **>(&sv))))
+	if (st.master_changed && SUCCEEDED(ctl->QueryInterface(__uuidof(ISimpleAudioVolume), reinterpret_cast<void **>(&sv))))
 	{
-		sv->SetMasterVolume(st.master, nullptr);
+		sv->SetMasterVolume(st.master, nullptr); // only if we faded it (otherwise the player's own changes stay)
 		sv->Release();
 	}
 	st.volume_saved = false;
+	st.master_changed = false;
 	st.cur_l = st.cur_r = -1;
 }
 
@@ -1254,8 +1330,11 @@ static HMONITOR find_captured_monitor()
 
 // One pass over the programs playing sound. want = on/off rule (TV shows the desktop, or PC mode);
 // gl/gr = left/right gains from the position script, or -1 when there is none. restore_all = undo everything.
-// ---- record of the programs whose sound we changed (survives a crash of the game)
+// ---- record of the programs whose sound we ever changed (kept across runs). First line: "#running" while
+// we may have changed something, "#clean" after everything was given back. Older files (v4.9) have no first
+// line and only exist after a crash. At start and after every give-back, these programs get an even balance.
 static std::set<std::wstring> g_touched;
+static bool g_touched_dirty = false;
 static std::string touched_file_path()
 {
 	std::string p = pos_file_path();
@@ -1282,37 +1361,65 @@ static void save_touched()
 	if (g_touched.empty()) { DeleteFileA(path.c_str()); return; }
 	FILE *f = nullptr;
 	if (_wfopen_s(&f, std::wstring(path.begin(), path.end()).c_str(), L"w, ccs=UTF-8") != 0 || !f) return;
+	fwprintf(f, L"%s\n", g_touched_dirty ? L"#running" : L"#clean");
 	for (const auto &e : g_touched) fwprintf(f, L"%s\n", e.c_str());
 	fclose(f);
 }
 static void note_touched(DWORD pid)
 {
 	const std::wstring e = exe_of(pid);
-	if (!e.empty() && g_touched.insert(e).second) save_touched();
+	if (e.empty()) return;
+	const bool added = g_touched.insert(e).second;
+	if (added || !g_touched_dirty) { g_touched_dirty = true; save_touched(); }
 }
-static std::set<std::wstring> load_touched()
+static std::set<std::wstring> load_touched(bool &unclean)
 {
+	unclean = false;
 	std::set<std::wstring> out;
 	const std::string path = touched_file_path();
 	FILE *f = nullptr;
 	if (_wfopen_s(&f, std::wstring(path.begin(), path.end()).c_str(), L"r, ccs=UTF-8") != 0 || !f) return out;
+	bool clean = false;
 	wchar_t line[MAX_PATH];
 	while (fgetws(line, MAX_PATH, f))
 	{
 		std::wstring e = line;
 		while (!e.empty() && (e.back() == L'\n' || e.back() == L'\r' || e.back() == L' ')) e.pop_back();
-		if (!e.empty()) out.insert(e);
+		if (e == L"#clean") clean = true;
+		else if (!e.empty() && e[0] != L'#') out.insert(e);
 	}
 	fclose(f);
+	unclean = !clean; // "#running", or a v4.9 file (no state line: it only remained after a crash)
 	return out;
 }
 
-// At start: programs listed from a run that did not restore them get unmuted, left/right reset to full
+// Put a program's left/right back to 100 % / 100 % if it is lopsided. Returns true if it changed something.
+static bool even_out(IAudioSessionControl2 *ctl)
+{
+	IChannelAudioVolume *ch = nullptr;
+	bool changed = false;
+	if (SUCCEEDED(ctl->QueryInterface(__uuidof(IChannelAudioVolume), reinterpret_cast<void **>(&ch))))
+	{
+		UINT n = 0; ch->GetChannelCount(&n);
+		for (UINT k = 0; k < n; ++k)
+		{
+			float v = 1.0f; ch->GetChannelVolume(k, &v);
+			if (v < 0.999f) { ch->SetChannelVolume(k, 1.0f, nullptr); changed = true; }
+		}
+		ch->Release();
+	}
+	return changed;
+}
+
+// At start: every program we ever panned gets an even balance back; after a crash (list still "#running")
+// they are also unmuted. The list is kept for the next runs.
 static void heal_from_last_run()
 {
 	if (g_linux) return; // the Linux helper keeps its own record
-	const auto list = load_touched();
+	bool unclean = false;
+	const auto list = load_touched(unclean);
 	if (list.empty()) return;
+	g_touched = list;
 	IMMDeviceEnumerator *en = nullptr; IMMDevice *dev = nullptr; IAudioSessionManager2 *mgr = nullptr; IAudioSessionEnumerator *sessions = nullptr;
 	if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), reinterpret_cast<void **>(&en))) &&
 		SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eMultimedia, &dev)) &&
@@ -1331,15 +1438,10 @@ static void heal_from_last_run()
 				c2->GetProcessId(&pid);
 				if (pid != 0 && list.count(exe_of(pid)))
 				{
-					set_session_mute(c2, FALSE);
-					IChannelAudioVolume *ch = nullptr;
-					if (SUCCEEDED(c2->QueryInterface(__uuidof(IChannelAudioVolume), reinterpret_cast<void **>(&ch))))
-					{
-						UINT n = 0; ch->GetChannelCount(&n);
-						for (UINT k = 0; k < n; ++k) ch->SetChannelVolume(k, 1.0f, nullptr);
-						ch->Release();
-					}
-					LOG_INFO("sound: process %lu given back its sound (left changed by an earlier run)", pid);
+					const bool was_muted = unclean && get_mute(c2);
+					if (was_muted) set_session_mute(c2, FALSE);
+					if (even_out(c2) || was_muted)
+						LOG_INFO("sound: process %lu given back its sound (left changed by an earlier run)", pid);
 				}
 				c2->Release();
 			}
@@ -1347,7 +1449,8 @@ static void heal_from_last_run()
 		}
 	}
 	if (sessions) sessions->Release(); if (mgr) mgr->Release(); if (dev) dev->Release(); if (en) en->Release();
-	DeleteFileA(touched_file_path().c_str());
+	g_touched_dirty = false;
+	save_touched(); // "#clean" + the list, for the next runs
 }
 
 static void update_sound(bool restore_all, bool want, float gl, float gr)
@@ -1395,6 +1498,8 @@ static void update_sound(bool restore_all, bool want, float gl, float gr)
 							restore_session_volume(c2, known->second);
 							if (known->second.muted_by_us) set_session_mute(c2, FALSE);
 						}
+						else if (!g_touched.empty() && g_touched.count(exe_of(pid)) && even_out(c2))
+							LOG_INFO("sound: process %lu given back an even left/right", pid);
 					}
 					else
 					{
@@ -1440,7 +1545,7 @@ static void update_sound(bool restore_all, bool want, float gl, float gr)
 	if (mgr) mgr->Release();
 	if (dev) dev->Release();
 	if (en) en->Release();
-	if (restore_all) { g_sessions.clear(); g_touched.clear(); save_touched(); }
+	if (restore_all) { g_sessions.clear(); g_touched_dirty = false; save_touched(); } // list kept, "#clean"
 }
 
 // ---------------------------------------------------------------- background thread
@@ -1988,10 +2093,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 		reshade::register_event<reshade::addon_event::draw>(on_draw);
 		reshade::register_event<reshade::addon_event::draw_indexed>(on_draw_indexed);
 		reshade::register_event<reshade::addon_event::draw_or_dispatch_indirect>(on_draw_indirect);
-		LOG_INFO("v4.9 loaded");
+		LOG_INFO("v5.0 loaded");
 		break;
 	case DLL_PROCESS_DETACH:
 		if (g_pcmode) ClipCursor(nullptr);
+		unhook_game_foreground();
 		if (g_worker.joinable()) { g_worker_stop = true; g_worker.detach(); } // cannot wait inside DllMain
 		if (g_linux) linux_stop();
 		reshade::unregister_addon(module);

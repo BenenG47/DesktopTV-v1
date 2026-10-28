@@ -18,7 +18,7 @@ YouTube on her TV. Your browser on her PC. Sound that follows her around the off
   - The cursor starts exactly where the game's cursor was, and goes back to the same spot.
   - Insert again takes you back to the game.
 - **Spatial sound**: programs on that monitor (YouTube in a browser, a music player...) get louder as Jodi gets close to her PC or the TV, fade away with distance, and come from the left or right depending on where the camera looks.
-- **Clean**: outside Jodi's office it does nothing at all (no capture, no checks, Insert left alone). Your programs get their sound back when you leave or close the game, and even after a crash.
+- **Clean**: outside Jodi's office it does nothing at all (no capture, no checks, Insert left alone). Your programs get their sound back, with an even left/right, when you leave or close the game, and even after a crash.
 - **Game files untouched**: it's a ReShade add-on (`DesktopTV.addon64`) plus a small UE4SS Lua script (`DesktopTVPos`). It only changes what the game draws on screen.
 
 ### PC mode at Jodi's desk
@@ -178,6 +178,16 @@ This is optional: a ready-built `DesktopTV.addon64` is included.
 
 - **Windows**: you need Visual Studio 2022 or newer with the C++ tools ("Desktop development with C++"; the free Build Tools are enough). Double-click `build.bat` and the add-on appears at `build\DesktopTV.addon64`.
 - **Linux**: run `Linux/build_linux.sh` (MinGW). See the Linux how-to.
+
+---
+
+## Version history
+
+- **1.2** (add-on v5.0, 2026-10-28)
+  - **Your browser no longer gets stuck in one ear.** DesktopTV always starts from, and gives back, an even left/right, and repairs any program it ever panned when the game starts and closes.
+  - **The game keeps its sound in PC mode.** Alt+Tab still mutes the game as before.
+- **1.1** (add-on v4.9, 2026-10-25): works with the game's own wallpaper on Jodi's PC (PCWallpaperQuiet no longer needed).
+- **1.0** (add-on v4.8, 2026-10-24): first release.
 
 ---
 
